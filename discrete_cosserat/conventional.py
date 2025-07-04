@@ -1,7 +1,10 @@
 import numpy as np
 from scipy.linalg import expm, logm
-from scipy.optimize import root
+from scipy.optimize import root, least_squares
 from matplotlib import pyplot as plt
+
+# At the top of your script (optional)
+debug_vars = {}
 
 # Linear Algebra Functions
 def _hat(v):
@@ -92,21 +95,23 @@ def _Ah(n):
     right = n[:, [-1]] / 2                   # (m, 1)
     return np.hstack([left, middle, right])  # (m, N+1)
 
-
-def _unpack_residual(q, N):
+def _unpack_residual2(q, N):
     ''''
-    Extract r and PhiBI from the flattened residual array and reshape then to a collection of column vectors
+    Extract n1, tau1, r and PhiBI from the flattened residual array and reshape then to a collection of column vectors
 
     Args: 
-        q = [[r1, r2, ..., r_{N+1}].flattened, [Phi_{B1_I}, Phi_{B2_I}, ..., Phi_{BN_I}].flattend] shape (6*N + 3, )
-        There are N + 1 vertices hence N + 1 r values
-        There are N material frames hence N Phi values, where expm(hat(Phi_{Bi_I})) = RBi_I
-        Need to reshape r to (3, N+1) and PhiBU to (3, N)
+        q = [n1, tau1, | r2, r3, ..., r_{N+1}, | Phi_{B1_2} Phi_{B3_I}, ..., Phi_{BN_I}]      
+        Need to reshape r to (3, N) and PhiBU to (3, N-1)
     
     Returns:
-        r, PhiBI         (3, N+1) and (3, N) respectively
+        r, PhiBI         (3, N) and (3, N-1) respectively
     '''
-    return q[:3*(N+1)].reshape(3,-1,order='F') , q[3*(N+1):].reshape(3, -1, order = 'F') 
+    n1 = q[0:3]
+    tau1 = q[3:6]
+    rD = q[6: 6+3*N].reshape(3, -1, order='F')
+    PhiBID = q[6+3*N:].reshape(3, -1, order='F')
+
+    return n1, tau1, rD, PhiBID
 
 
 def _residual(q, parameters):
@@ -115,18 +120,20 @@ def _residual(q, parameters):
     rest_D = _voronoi_domain(rest_lens)      # (N, )
     SST_B = parameters["SST_B"]              # (3, 3)
     BBT_B = parameters["BBT_B"]              # (3, 3)
-    F_ext = parameters["F_ext"]              # (3, N+1)
+    F_ext = parameters["f_ext"]              # (3, N+1)
     tau_ext = parameters["tau_ext"]          # (3, N)
- 
-    r, PhiBI = _unpack_residual(q, N)
+    
+    n1, tau1, rD, PhiBID = _unpack_residual2(q, N)           # (3, N) , (3, N-1)
+    r = np.hstack([np.zeros(3).reshape(3, -1), rD])          # (3, N+1)
+    PhiBI = np.hstack([np.zeros(3).reshape(-3, 1), PhiBID])  # (3, N)
 
     # Calculate quantities available from r
-    diff_r = _array_difference(r)         # displacements r_{i+1} - r_i                                        (3, N)
-    lens = np.linalg.norm(diff_r, axis=0)        # lengths of every edge                                       (N, )
-    tangents = diff_r / lens              # tangent vectors on every edge resolved in the inertial frame       (3, N)
-    e_dil = lens / rest_lens              # arclength dilatations                                              (N, )
-    D = _voronoi_domain(lens)             # Voronoi domains                                                    (N-1, )
-    Eps = D / rest_D                      # Voronoi strains                                                    (N-1, )
+    diff_r = _array_difference(r)            # displacements r_{i+1} - r_i                                        (3, N)
+    lens = np.linalg.norm(diff_r, axis=0)    # lengths of every edge                                              (N, )
+    tangents = diff_r / lens                 # tangent vectors on every edge resolved in the inertial frame       (3, N)
+    e_dil = lens / rest_lens                 # arclength dilatations                                              (N, )
+    D = _voronoi_domain(lens)                # Voronoi domains                                                    (N-1, )
+    Eps = D / rest_D                         # Voronoi strains                                                    (N-1, )
 
     # Calculate rotation matrices 
     RBI = np.zeros([3, 3*N])              # (3, 3N)
@@ -142,6 +149,7 @@ def _residual(q, parameters):
     kappa_B = np.zeros([3, N-1])          # (3, N-1)
     for i in range(N-1):
         kappa_B[:, i] = 1 / rest_D[i] * _vee(logm(RBI[:, 3*(i+1) : 3*(i+2)] @ RBI[:, 3*i : 3*(i+1)].T))
+
     
     # Internal Force balance
     n = np.zeros([3, N])
@@ -149,6 +157,7 @@ def _residual(q, parameters):
         n[:, i] = 1 / e_dil[i] * RBI[:, 3*i : 3*(i+1)].T @ SST_B @ sigma_B[:, i] 
     
     force_balance = _Deltah(n) + F_ext   # (3, N+1)
+    force_balance[:, 0] = n1 + F_ext[:, 0]
 
     # Internal moment balance
     # Bending and Twisting Contribution
@@ -164,8 +173,32 @@ def _residual(q, parameters):
         shear_stretch_couple[:, i] = np.linalg.cross(RBI[:, 3*i : 3*(i+1)] @ tangents[:, i] , SST_B @ sigma_B[:, i])
 
     torque_balance = _Deltah(bend_twist_2D) + _Ah(bend_twist_3D) + shear_stretch_couple + tau_ext   # (3, N)
+    torque_balance[:, 0] = tau1 + tau_ext[:, 0]
 
-    residual = np.hstack([force_balance.flatten(order = 'F'), torque_balance.flatten(order = 'F')]) # (6*N + 3, )
+    residual = np.hstack([force_balance.flatten(order = 'F'), torque_balance.flatten(order = 'F')]) # 
+    
+    # Inside _residual
+    debug_vars.update({
+        "r": r,
+        "PhiBI": PhiBI,
+        "diff_r": diff_r,
+        "lens": lens,
+        "tangents": tangents,
+        "e_dil": e_dil,
+        "D": D,
+        "Eps": Eps,
+        "RBI": RBI,
+        "sigma_B": sigma_B,
+        "kappa_B": kappa_B,
+        "n": n,
+        "force_balance": force_balance,
+        "bend_twist_2D": bend_twist_2D,
+        "bend_twist_3D": bend_twist_3D,
+        "shear_stretch_couple": shear_stretch_couple,
+        "torque_balance": torque_balance,
+        "res": residual,
+    })
+    
     return residual
 
 def residual_wrapper(q, parameters):
@@ -173,8 +206,9 @@ def residual_wrapper(q, parameters):
 
 # Simulate a rod===============================================================================================================
 # Discretization
-N = 10
-ds = 0.05  # rest length of each segment
+L = 0.2
+N = 20
+ds = L / N  # rest length of each segment
 
 # Geometry
 radius = 0.001  # m
@@ -187,6 +221,10 @@ J = 2 * I                             # m^2 Polar moment of area
 E = 1e5       # Pa
 G = 3.3e4     # Pa
 
+# External forces and torques
+f_external_I = np.zeros([3, N+1])
+f_external_I[:, -1] = np.array([0, 10, 0])
+
 rod_params = {
     "N": N,
     "rest_lengths": np.ones(N) * ds,
@@ -195,29 +233,39 @@ rod_params = {
     "kappa_rest_B": np.zeros((3, N - 1)),
     "SST_B": np.diag([G*A, G*A, E*A]),
     "BBT_B": np.diag([E*I, E*I, G*J]),
-    "F_ext": np.zeros((3, N+1)),
+    "f_ext": f_external_I,
     "tau_ext": np.zeros((3, N))
 }
 
-Fy_tip = 0.01
-rod_params["F_ext"][:, -1] = np.array([0.0, Fy_tip, 0.0])
 
 # The rod is intially straight along the Inertial Frame z axis
-r_init = np.linspace(0, ds * N, N+1).reshape(1, -1)
-r_init = np.vstack([np.zeros((2, N+1)), r_init])  # (3, N+1)
-PhiBI_init = np.zeros((3, N))
+n_init = 0.0 * np.ones(3).reshape(3, -1)
+tau_init = 0.0 * np.ones(3).reshape(3, -1)
+r_init = np.vstack([0.0 * np.ones((2, N)), 
+                    np.linspace(0, ds * N, N+1)[1:].reshape(1, -1)])     # (3, N+1)
+PhiBI_init = 0.0 * np.ones((3, N-1))
 
 # Stack into initial guess q
-q_init = np.hstack([r_init, PhiBI_init])  # shape (3, 2N)
-q_init = q_init.flatten(order = 'F')
+q_init = np.hstack([n_init, tau_init, r_init, PhiBI_init]).flatten(order = 'F')        
 
 # Solve using root-finder
-sol = root(
-    residual_wrapper,
-    q_init.flatten(),
-    args=(rod_params,),
-    method='hybr',
-    tol=1e-6
+# sol = root(
+#     residual_wrapper,
+#     q_init.flatten(),
+#     args=(rod_params,),
+#     method='hybr',
+#     tol=1e-4,
+# )
+
+sol = least_squares(
+    residual_wrapper,     
+    q_init,             
+    args=(rod_params,),   
+    method='trf',         # Trust Region Reflective
+    ftol=1e-5,            # Cost reduction (Col 4)
+    xtol=1e-5,            # Step Norm (Col 5)
+    gtol=1e-5,            # Optimality (Col 6)
+    verbose=2             # Print detailed output for convergence tracking
 )
 
 # Check for convergence
@@ -227,10 +275,20 @@ if sol.success:
     q_sol = sol.x
     q_sol[np.abs(q_sol) < threshold] = 0.0
 
-    r_sol, Theta_sol = _unpack_residual(q_sol, N)
+    n1, tau1, rD_sol, ThetaD_sol = _unpack_residual2(q_sol, N)
+    r_sol = np.hstack([np.zeros(3).reshape(3, -1), rD_sol])
+    Theta_sol = np.hstack([np.zeros(3).reshape(3, -1) ,ThetaD_sol])
 else:
     raise RuntimeError(f"Root-finding failed: {sol.message}")
 
+def axisEqual3D(ax):
+    extents = np.array([getattr(ax, f'get_{dim}lim')() for dim in 'xyz'])
+    sz = extents[:, 1] - extents[:, 0]
+    centers = np.mean(extents, axis=1)
+    maxsize = max(abs(sz))
+    r = maxsize / 2
+    for ctr, dim in zip(centers, 'xyz'):
+        getattr(ax, f'set_{dim}lim')(ctr - r, ctr + r)
 
 fig = plt.figure()
 ax = fig.add_subplot(111, projection='3d')
@@ -245,7 +303,27 @@ ax.set_zlabel('Z')
 ax.set_title('Static Cosserat Rod Shape')
 ax.legend()
 
+# Equal scaling
+x_range = r_sol[0, :]
+y_range = r_sol[1, :]
+z_range = r_sol[2, :]
+
+x_min, x_max = np.min(x_range), np.max(x_range)
+y_min, y_max = np.min(y_range), np.max(y_range)
+z_min, z_max = np.min(z_range), np.max(z_range)
+
+max_range = max(x_max - x_min, y_max - y_min, z_max - z_min) / 2.0
+x_mid = (x_max + x_min) / 2.0
+y_mid = (y_max + y_min) / 2.0
+z_mid = (z_max + z_min) / 2.0
+
+ax.set_xlim(x_mid - max_range, x_mid + max_range)
+ax.set_ylim(y_mid - max_range, y_mid + max_range)
+ax.set_zlim(z_mid - max_range, z_mid + max_range)
+axisEqual3D(ax)
+
 plt.show()
+
 
 
 
@@ -335,4 +413,3 @@ plt.show()
 # RB3_I_calc = expm(_hat(Theta2)) @ RB2_I_calc
 # RB4_I_calc = expm(_hat(Theta3)) @ RB3_I_calc
 # RBI_calc = np.hstack([RB0_I, RB1_I_calc, RB2_I_calc, RB3_I_calc, RB4_I_calc])
-
