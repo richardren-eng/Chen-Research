@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.linalg import expm
 import timeit
+import tracemalloc
 
 # -- Generic Quaternion --
 def quat_multiply(q1, q2):
@@ -67,6 +68,17 @@ def dual_quat_to_SE3(Q):
 
     return T
 
+# --- Memory Usage Tracking ---
+def measure_peak_memory(func):
+    '''
+    Return:
+        KB of RAM consumed
+    '''
+    tracemalloc.start()
+    func()
+    current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    return peak / 1024  # KB
 
 
 # --- SE3 ---
@@ -145,7 +157,7 @@ def form_dual_quat(theta_vec, d):
 # --- Benchmark Parameters ---
 num_transforms = 200
 num_timeit_runs = 100
-seed = 56
+seed = 80
 
 # The curvature and displacement are obtained at the start of each step
 # --- Timing SE(3) multiplication ---
@@ -178,6 +190,10 @@ Q_time = timeit.timeit(run_dualquat, number=num_timeit_runs)
 se3_avg = se3_time / num_timeit_runs
 Q_avg = Q_time / num_timeit_runs
 
+# --- Memory Usage ---
+peak_mem_se3 = measure_peak_memory(run_se3)
+peak_mem_dq = measure_peak_memory(run_dualquat)
+
 
 # Ensure both methods produced the same final pose
 gIB = run_se3()
@@ -193,4 +209,7 @@ print(f"{'Number of timeit runs:':<35} {num_timeit_runs}")
 print(f"{'SE(3) Avg Time:':<35} {1000 * se3_avg:.3f} ms")
 print(f"{'Dual Quaternion Avg Time:':<35} {1000 * Q_avg:.3f} ms")
 print(f"{'DQ is how many × faster than SE3:':<35} {se3_avg / Q_avg:.2f}× faster")
+print(f"{'Peak Memory (SE3):':<40} {peak_mem_se3:,.1f} KB")
+print(f"{'Peak Memory (Dual Quaternion):':<40} {peak_mem_dq:,.1f} KB")
+print(f"{'Memory saving (DQ vs SE3):':<40} {peak_mem_se3 / peak_mem_dq:,.2f}× less memory")
 print("="*50)
