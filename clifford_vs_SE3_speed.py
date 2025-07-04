@@ -155,9 +155,11 @@ def form_dual_quat(theta_vec, d):
 
 
 # --- Benchmark Parameters ---
-num_transforms = 200
+num_transforms = 100
 num_timeit_runs = 100
 seed = 80
+test_DQ_first = 1
+zero_tol = 1e-8
 
 # The curvature and displacement are obtained at the start of each step
 # --- Timing SE(3) multiplication ---
@@ -184,26 +186,31 @@ def run_dualquat():
         QIB = dual_quat_multiply(QIB, form_dual_quat(kappa, d))
     return QIB
 
-# --- Timeit ---
-se3_time = timeit.timeit(run_se3, number=num_timeit_runs)
-Q_time = timeit.timeit(run_dualquat, number=num_timeit_runs)
-se3_avg = se3_time / num_timeit_runs
-Q_avg = Q_time / num_timeit_runs
-
-# --- Memory Usage ---
-peak_mem_se3 = measure_peak_memory(run_se3)
-peak_mem_dq = measure_peak_memory(run_dualquat)
-
+# --- Timeit and Memory Usage Tests---
+if test_DQ_first:
+    Q_time = timeit.timeit(run_dualquat, number=num_timeit_runs)
+    Q_avg = Q_time / num_timeit_runs
+    peak_mem_dq = measure_peak_memory(run_dualquat)
+    se3_time = timeit.timeit(run_se3, number=num_timeit_runs)
+    se3_avg = se3_time / num_timeit_runs
+    peak_mem_se3 = measure_peak_memory(run_se3)
+else:
+    se3_time = timeit.timeit(run_se3, number=num_timeit_runs)
+    se3_avg = se3_time / num_timeit_runs
+    peak_mem_se3 = measure_peak_memory(run_se3)
+    Q_time = timeit.timeit(run_dualquat, number=num_timeit_runs)
+    Q_avg = Q_time / num_timeit_runs
+    peak_mem_dq = measure_peak_memory(run_dualquat)
 
 # Ensure both methods produced the same final pose
-gIB = run_se3()
 QIB = run_dualquat()
-zero_tol = 1e-8
+gIB = run_se3()
 assert np.linalg.norm(gIB - dual_quat_to_SE3(QIB), ord='fro') < zero_tol
 
 print("="*50)
 print("         Transformation Benchmark Results         ")
 print("="*50)
+print(f"{'Order of Testing:':<35} {'DQ, SE(3)' if test_DQ_first else 'SE(3), DQ'}")
 print(f"{'Number of pose transformations:':<35} {num_transforms}")
 print(f"{'Number of timeit runs:':<35} {num_timeit_runs}")
 print(f"{'SE(3) Avg Time:':<35} {1000 * se3_avg:.3f} ms")
