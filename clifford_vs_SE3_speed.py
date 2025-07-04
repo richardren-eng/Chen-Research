@@ -2,6 +2,8 @@ import numpy as np
 from scipy.linalg import expm
 import timeit
 import tracemalloc
+import platform
+import os
 
 # -- Generic Quaternion --
 def quat_multiply(q1, q2):
@@ -81,8 +83,19 @@ def measure_peak_memory(func):
     return peak / 1024  # KB
 
 
+# --- System Information ---
+def get_system_info():
+    return {
+        "Processor": platform.processor(),
+        "Machine": platform.machine(),
+        "Architecture": platform.architecture()[0],
+        "OS": platform.system() + " " + platform.release()
+    }
+
+
 # --- SE3 ---
 def hat(v):
+    # Unused
     v1, v2, v3 = v
     return np.array([
         [0,     -v3,  v2],
@@ -99,23 +112,27 @@ def form_SE3(R, d):
 
 def expmap_se3(u):
     u1, u2, u3 = u
-    return expm(np.array([
+    u_norm = np.sqrt(u1**2 + u2**2 + u3**2)
+    if u_norm < 1e-8:
+        return np.eye(3)
+    
+    u_hat = np.array([
         [0,     -u3,  u2],
         [u3,   0,    -u1],
         [-u2,  u1,  0]
-    ]))
+    ])
+
+    u_hat_sq = u_hat @ u_hat
+    A = np.sin(u_norm) / u_norm
+    B = (1 - np.cos(u_norm)) / (u_norm**2)
+    
+    return np.eye(3) + A * u_hat + B * u_hat_sq
 
 
 # --- Clifford ---
 def dual_quat_multiply(Q1, Q2):
-    # Real parts
-    rw1, rx1, ry1, rz1 = Q1[:4]
-    rw2, rx2, ry2, rz2 = Q2[:4]
-
-    # Dual parts
-    tw1, tx1, ty1, tz1 = Q1[4:]
-    tw2, tx2, ty2, tz2 = Q2[4:]
-
+    rw1, rx1, ry1, rz1, tw1, tx1, ty1, tz1 = Q1
+    rw2, rx2, ry2, rz2, tw2, tx2, ty2, tz2 = Q2
     return np.array([
         rw1*rw2 - rx1*rx2 - ry1*ry2 - rz1*rz2, 
         rw1*rx2 + rx1*rw2 + ry1*rz2 - rz1*ry2, 
@@ -127,36 +144,37 @@ def dual_quat_multiply(Q1, Q2):
         rw1*tz2 + rx1*ty2 - ry1*tx2 + rz1*tw2 + tw1*rz2 + tx1*ry2 - ty1*rx2 + tz1*rw2
         ])
 
-def form_dual_quat(theta_vec, d):
-    theta = np.linalg.norm(theta_vec)
-    
-    if theta < 1e-8:
+
+
+def form_dual_quat(u, d):
+    dx, dy, dz = d
+    u_norm = np.linalg.norm(u)
+
+    if u_norm < 1e-8:
         # Identity rotation + zero translation
         return np.array([1.0, 0.0, 0.0, 0.0,   0.0, 0.0, 0.0, 0.0])
     
     # Rotation quaternion
-    rot_axis = theta_vec / theta
-    half_theta = 0.5 * theta
-    sin_ht = np.sin(half_theta)
-    cos_ht = np.cos(half_theta)
-    rx, ry, rz = rot_axis * sin_ht
+    half_u = 0.5 * u_norm
+    cos_hu = np.cos(half_u)
+    rx, ry, rz = u / u_norm * np.sin(half_u)
 
-    # Translation vector
-    dx, dy, dz = d
-
-    # Compute q_d = 0.5 * [0, d] * q_r (inlined quaternion multiplication)
-    qw = -0.5 * (dx * rx + dy * ry + dz * rz)
-    qx =  0.5 * (cos_ht * dx + dy * rz - dz * ry)
-    qy =  0.5 * (cos_ht * dy + dz * rx - dx * rz)
-    qz =  0.5 * (cos_ht * dz + dx * ry - dy * rx)
-
-    return np.array([cos_ht, rx, ry, rz, qw, qx, qy, qz])
+    return np.array([
+        cos_hu, 
+        rx, 
+        ry, 
+        rz, 
+        -0.5 * (dx * rx + dy * ry + dz * rz), 
+        0.5 * (cos_hu * dx + dy * rz - dz * ry), 
+        0.5 * (cos_hu * dy + dz * rx - dx * rz), 
+        0.5 * (cos_hu * dz + dx * ry - dy * rx)
+        ])
 
 
 
 # --- Benchmark Parameters ---
-num_transforms = 1000
-num_timeit_runs = 100
+num_transforms = 100
+num_timeit_runs = 10000
 seed = 807
 test_DQ_first = 1
 zero_tol = 1e-8
@@ -201,9 +219,9 @@ else:
     peak_mem_dq = measure_peak_memory(run_dualquat)
 
 # Ensure both methods produced the same final pose
-# QIB = run_dualquat()
-# gIB = run_se3()
-# assert np.linalg.norm(gIB - dual_quat_to_SE3(QIB), ord='fro') < zero_tol
+QIB = run_dualquat()
+gIB = run_se3()
+assert np.linalg.norm(gIB - dual_quat_to_SE3(QIB), ord='fro') < zero_tol
 
 print("="*50)
 print("         Transformation Benchmark Results         ")
@@ -218,3 +236,8 @@ print(f"{'Peak Memory (SE3):':<40} {peak_mem_se3:,.1f} KB")
 print(f"{'Peak Memory (Dual Quaternion):':<40} {peak_mem_dq:,.1f} KB")
 print(f"{'Memory saving (DQ vs SE3):':<40} {peak_mem_se3 / peak_mem_dq:,.2f}× less memory")
 print("="*50)
+sysinfo = get_system_info()
+print(f"{'Processor:':<35} {sysinfo['Processor']}")
+print(f"{'Machine:':<35} {sysinfo['Machine']}")
+print(f"{'Architecture:':<35} {sysinfo['Architecture']}")
+print(f"{'OS:':<35} {sysinfo['OS']}")
