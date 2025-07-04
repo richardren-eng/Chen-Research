@@ -4,6 +4,7 @@ import timeit
 
 # -- Generic Quaternion --
 def quat_multiply(q1, q2):
+    # Unused in timing, only used in post-processing
     w1, x1, y1, z1 = q1
     w2, x2, y2, z2 = q2
     return np.array([
@@ -14,6 +15,7 @@ def quat_multiply(q1, q2):
     ])
 
 def expmap_to_quat(theta_vec):
+    # Unused
     theta = np.linalg.norm(theta_vec)
     if theta < 1e-8:
         return np.array([1.0, 0.0, 0.0, 0.0])
@@ -25,6 +27,7 @@ def expmap_to_quat(theta_vec):
 
 # -- Clifford --> SE(3)
 def quat_to_rotmat(q):
+    # Unused in timing, only used in post-processing
     """Convert a unit quaternion [w, x, y, z] to a 3x3 rotation matrix."""
     w, x, y, z = q
     return np.array([
@@ -34,6 +37,7 @@ def quat_to_rotmat(q):
     ])
 
 def dual_quat_to_SE3(Q):
+    # Unused in timing, only used in post-processing
     """
     Convert a dual quaternion to a 4x4 SE(3) transformation matrix.
 
@@ -138,18 +142,19 @@ def form_dual_quat(theta_vec, d):
 
 
 
-# --- Data generation ---
-N = 100
+# --- Benchmark Parameters ---
+num_transforms = 200
+num_timeit_runs = 100
 seed = 56
 
-# The curvature and displacement is obtained at the start of each step
+# The curvature and displacement are obtained at the start of each step
 # --- Timing SE(3) multiplication ---
 def run_se3():
     np.random.seed(seed)
     gIB = np.eye(4)
 
     # Simulate forward marching
-    for i in range(N):
+    for i in range(num_transforms):
         kappa = np.random.rand(3)
         d = np.random.rand(3)
         gIB = gIB @ form_SE3(expmap_se3(kappa), d)
@@ -161,27 +166,31 @@ def run_dualquat():
     QIB = np.array([1, 0, 0, 0, 0, 0, 0, 0])
 
     # Simulate forward marching
-    for i in range(N):
+    for i in range(num_transforms):
         kappa = np.random.rand(3)
         d = np.random.rand(3)
         QIB = dual_quat_multiply(QIB, form_dual_quat(kappa, d))
     return QIB
 
 # --- Timeit ---
-num_runs = 100
-se3_time = timeit.timeit(run_se3, number=num_runs)
-Q_time = timeit.timeit(run_dualquat, number=num_runs)
+se3_time = timeit.timeit(run_se3, number=num_timeit_runs)
+Q_time = timeit.timeit(run_dualquat, number=num_timeit_runs)
+se3_avg = se3_time / num_timeit_runs
+Q_avg = Q_time / num_timeit_runs
 
-se3_avg = se3_time / num_runs
-Q_avg = Q_time / num_runs
 
+# Ensure both methods produced the same final pose
 gIB = run_se3()
 QIB = run_dualquat()
-
 zero_tol = 1e-8
 assert np.linalg.norm(gIB - dual_quat_to_SE3(QIB), ord='fro') < zero_tol
-print(f"Number of transformations: {N}")
-print(f"Number of timeit runs: {num_runs}")
-print(f"SE3 Avg (ms): {1000 * se3_avg} ")
-print(f"Dual Quaternion Avg (ms): {1000 * Q_avg}")
 
+print("="*50)
+print("         Transformation Benchmark Results         ")
+print("="*50)
+print(f"{'Number of pose transformations:':<35} {num_transforms}")
+print(f"{'Number of timeit runs:':<35} {num_timeit_runs}")
+print(f"{'SE(3) Avg Time:':<35} {1000 * se3_avg:.3f} ms")
+print(f"{'Dual Quaternion Avg Time:':<35} {1000 * Q_avg:.3f} ms")
+print(f"{'DQ is how many × faster than SE3:':<35} {se3_avg / Q_avg:.2f}× faster")
+print("="*50)
