@@ -17,17 +17,6 @@ def quat_multiply(q1, q2):
         w1*z2 + x1*y2 - y1*x2 + z1*w2
     ])
 
-def expmap_to_quat(theta_vec):
-    # Unused
-    theta = np.linalg.norm(theta_vec)
-    if theta < 1e-8:
-        return np.array([1.0, 0.0, 0.0, 0.0])
-    axis = theta_vec / theta
-    half_theta = 0.5 * theta
-    return np.concatenate(([np.cos(half_theta)], axis * np.sin(half_theta)))
-
-
-
 # -- Clifford --> SE(3)
 def quat_to_rotmat(q):
     # Unused in timing, only used in post-processing
@@ -92,43 +81,6 @@ def get_system_info():
         "OS": platform.system() + " " + platform.release()
     }
 
-
-# --- SE3 ---
-def hat(v):
-    # Unused
-    v1, v2, v3 = v
-    return np.array([
-        [0,     -v3,  v2],
-        [v3,   0,    -v1],
-        [-v2,  v1,  0]
-    ])
-
-def form_SE3(R, d):
-    g = np.zeros([4, 4])
-    g[:3, :3] = R
-    g[:3, 3] = d
-    g[-1, -1] = 1
-    return g
-
-def expmap_se3(u):
-    u1, u2, u3 = u
-    u_norm = np.sqrt(u1**2 + u2**2 + u3**2)
-    if u_norm < 1e-8:
-        return np.eye(3)
-    
-    u_hat = np.array([
-        [0,     -u3,  u2],
-        [u3,   0,    -u1],
-        [-u2,  u1,  0]
-    ])
-
-    u_hat_sq = u_hat @ u_hat
-    A = np.sin(u_norm) / u_norm
-    B = (1 - np.cos(u_norm)) / (u_norm**2)
-    
-    return np.eye(3) + A * u_hat + B * u_hat_sq
-
-
 # --- Clifford ---
 def dual_quat_multiply(Q1, Q2):
     rw1, rx1, ry1, rz1, tw1, tx1, ty1, tz1 = Q1
@@ -176,21 +128,12 @@ def form_dual_quat(u, d):
 num_transforms = 100
 num_timeit_runs = 10000
 seed = 807
-test_DQ_first = 1
+test_DQ_first = 0
 zero_tol = 1e-8
 
 # The curvature and displacement are obtained at the start of each step
 kappa = np.random.rand(3, num_transforms)
 d = np.random.rand(3, num_transforms)
-
-# --- Timing SE(3) multiplication ---
-def run_se3():
-    gIB = np.eye(4)
-
-    # Simulate forward marching
-    for i in range(num_transforms):
-        gIB = gIB @ form_SE3(expmap_se3(kappa[:, i]), d[:, i])
-    return gIB
 
 # --- Timing dual quaternion multiplication ---
 def run_dualquat():
@@ -202,42 +145,18 @@ def run_dualquat():
         QIB = dual_quat_multiply(QIB, form_dual_quat(kappa[:, i], d[:, i]))
     return QIB
 
-# --- Timeit and Memory Usage Tests---
-if test_DQ_first:
-    Q_time = timeit.timeit(run_dualquat, number=num_timeit_runs)
-    Q_avg = Q_time / num_timeit_runs
-    peak_mem_dq = measure_peak_memory(run_dualquat)
-    se3_time = timeit.timeit(run_se3, number=num_timeit_runs)
-    se3_avg = se3_time / num_timeit_runs
-    peak_mem_se3 = measure_peak_memory(run_se3)
-else:
-    se3_time = timeit.timeit(run_se3, number=num_timeit_runs)
-    se3_avg = se3_time / num_timeit_runs
-    peak_mem_se3 = measure_peak_memory(run_se3)
-    Q_time = timeit.timeit(run_dualquat, number=num_timeit_runs)
-    Q_avg = Q_time / num_timeit_runs
-    peak_mem_dq = measure_peak_memory(run_dualquat)
 
-# Ensure both methods produced the same final pose
-QIB = run_dualquat()
-gIB = run_se3()
-assert np.linalg.norm(gIB - dual_quat_to_SE3(QIB), ord='fro') < zero_tol
+Q_time = timeit.timeit(run_dualquat, number=num_timeit_runs)
+Q_avg = Q_time / num_timeit_runs
+peak_mem_dq = measure_peak_memory(run_dualquat)
 
 print("="*50)
 print("         Transformation Benchmark Results         ")
 print("="*50)
-print(f"{'Order of Testing:':<35} {'DQ, SE(3)' if test_DQ_first else 'SE(3), DQ'}")
 print(f"{'Number of pose transformations:':<35} {num_transforms}")
 print(f"{'Number of timeit runs:':<35} {num_timeit_runs}")
-print(f"{'SE(3) Avg Time:':<35} {1000 * se3_avg:.3f} ms")
 print(f"{'Dual Quaternion Avg Time:':<35} {1000 * Q_avg:.3f} ms")
-print(f"{'DQ is how many × faster than SE3:':<35} {se3_avg / Q_avg:.2f}× faster")
-print(f"{'Peak Memory (SE3):':<40} {peak_mem_se3:,.1f} KB")
 print(f"{'Peak Memory (Dual Quaternion):':<40} {peak_mem_dq:,.1f} KB")
-print(f"{'Memory saving (DQ vs SE3):':<40} {peak_mem_se3 / peak_mem_dq:,.2f}× less memory")
 print("="*50)
-sysinfo = get_system_info()
-print(f"{'Processor:':<35} {sysinfo['Processor']}")
-print(f"{'Machine:':<35} {sysinfo['Machine']}")
-print(f"{'Architecture:':<35} {sysinfo['Architecture']}")
-print(f"{'OS:':<35} {sysinfo['OS']}")
+
+
